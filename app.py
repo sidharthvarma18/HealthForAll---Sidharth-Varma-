@@ -211,11 +211,18 @@ def train_models():
         "Respondent_ID", "Persona_Segment", "Q20_Likelihood_to_Use_App",
         "target_interest", "wtp_numeric", "guaranteed_wtp_numeric"
     ]]
-    X = data[feature_cols]
-    y = data["target_interest"]
 
+    # Classification: use only rows with a valid mapped target
+    clf_mask = data["target_interest"].notna()
+    clf_data = data.loc[clf_mask].copy()
+    if clf_data.empty:
+        raise ValueError("No usable rows found for classification. `Q20_Likelihood_to_Use_App` is missing or unmapped.")
+    X = clf_data[feature_cols]
+    y = clf_data["target_interest"].astype(int)
+
+    stratify_y = y if y.nunique() > 1 else None
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, stratify=y, random_state=42
+        X, y, test_size=0.25, stratify=stratify_y, random_state=42
     )
     preprocessor, _, _ = build_preprocessor(X)
 
@@ -274,9 +281,13 @@ def train_models():
     feat_imp = pd.DataFrame({"Feature": feature_names, "Importance": importances})
     feat_imp = feat_imp.sort_values("Importance", ascending=False).head(20)
 
-    # Regression
-    reg_X = X.copy()
-    reg_y = data["guaranteed_wtp_numeric"]
+    # Regression: use only rows with a valid numeric target
+    reg_mask = data["guaranteed_wtp_numeric"].notna()
+    reg_data = data.loc[reg_mask].copy()
+    if reg_data.empty:
+        raise ValueError("No usable rows found for regression. `Q26_Guaranteed_Results_WTP` is missing or unmapped.")
+    reg_X = reg_data[feature_cols].copy()
+    reg_y = reg_data["guaranteed_wtp_numeric"].astype(float)
     Xr_train, Xr_test, yr_train, yr_test = train_test_split(reg_X, reg_y, test_size=0.25, random_state=42)
     reg_preprocessor, _, _ = build_preprocessor(reg_X)
     regressors = {
@@ -415,7 +426,7 @@ def recommendation_logic(prob, pred_wtp, cluster_label):
     return "Awareness", "Content-first nurturing", "Lead with education, trust, and before/after value stories"
 
 def prepare_new_data(uploaded_df):
-    df = uploaded_df.copy()
+    df = ensure_required_columns(normalize_columns(uploaded_df.copy()))
     expected = [c for c in BASE_FEATURES if c not in ["Q20_Likelihood_to_Use_App"]]
     for col in expected:
         if col not in df.columns:
