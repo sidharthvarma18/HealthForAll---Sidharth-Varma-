@@ -4,129 +4,88 @@ import pandas as pd
 import numpy as np
 
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-from sklearn.cluster import KMeans
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
-st.set_page_config(page_title="FitFounder AI", layout="wide")
+st.set_page_config(layout="wide")
 
-st.title("🚀 FitFounder AI - Full Dashboard")
+st.title("🚀 FitFounder AI Dashboard (Stable Version)")
 
 # ---------------- LOAD DATA ----------------
-@st.cache_data
-def load_data():
-    df = pd.read_csv("fitness_app_synthetic_dataset_2000.csv")
-    return df
+df = pd.read_csv("fitness_app_synthetic_dataset_2000.csv")
 
-df = load_data()
-
-# ---------------- COLUMN DETECTION ----------------
-def find_col(keywords):
-    for col in df.columns:
-        for k in keywords:
-            if k.lower() in col.lower():
-                return col
-    return None
-
-interest_col = find_col(["likelihood"])
-wtp_col = find_col(["willingness"])
-guarantee_col = find_col(["guaranteed"])
-
-# ---------------- DESCRIPTIVE ----------------
-st.header("📊 Market Overview")
+st.subheader("📊 Dataset Preview")
 st.dataframe(df.head())
 
-if interest_col:
-    st.subheader("Interest Distribution")
-    st.bar_chart(df[interest_col].value_counts())
+# ---------------- TARGET ----------------
+target_col = "Q20_Likelihood_to_Use_App"
+
+df["target"] = df[target_col].apply(
+    lambda x: 1 if str(x).strip() in ["Likely", "Very likely"] else 0
+)
+
+X = df.drop(columns=[target_col, "target"], errors="ignore")
+y = df["target"]
 
 # ---------------- PREPROCESS ----------------
-df_model = df.copy()
+cat_cols = X.select_dtypes(include=["object"]).columns
+num_cols = X.select_dtypes(exclude=["object"]).columns
 
-# encode all categorical
-le_dict = {}
-for col in df_model.columns:
-    if df_model[col].dtype == 'object':
-        le = LabelEncoder()
-        df_model[col] = df_model[col].astype(str)
-        df_model[col] = le.fit_transform(df_model[col])
-        le_dict[col] = le
+preprocessor = ColumnTransformer([
+    ("cat", Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("encoder", OneHotEncoder(handle_unknown="ignore"))
+    ]), cat_cols),
 
-# ---------------- CLASSIFICATION ----------------
-st.header("🤖 Classification Model")
+    ("num", Pipeline([
+        ("imputer", SimpleImputer(strategy="median"))
+    ]), num_cols)
+])
 
-if interest_col:
-    y = df_model[interest_col]
+model = Pipeline([
+    ("preprocessor", preprocessor),
+    ("clf", RandomForestClassifier(n_estimators=150, random_state=42))
+])
 
-    # Binary conversion
-    y = y.apply(lambda x: 1 if x >= 3 else 0)
+# ---------------- TRAIN ----------------
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
-    X = df_model.drop(columns=[interest_col], errors='ignore')
+model.fit(X_train, y_train)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+y_pred = model.predict(X_test)
 
-    clf = RandomForestClassifier()
-    clf.fit(X_train, y_train)
-
-    y_pred = clf.predict(X_test)
-    y_prob = clf.predict_proba(X_test)[:,1]
-
-    st.write("Accuracy:", accuracy_score(y_test, y_pred))
-    st.write("Precision:", precision_score(y_test, y_pred))
-    st.write("Recall:", recall_score(y_test, y_pred))
-    st.write("F1:", f1_score(y_test, y_pred))
-    st.write("ROC AUC:", roc_auc_score(y_test, y_prob))
-
-# ---------------- CLUSTERING ----------------
-st.header("🧩 Customer Segmentation")
-
-kmeans = KMeans(n_clusters=4, random_state=42)
-clusters = kmeans.fit_predict(df_model)
-
-df['Cluster'] = clusters
-st.write(df['Cluster'].value_counts())
-
-# ---------------- REGRESSION ----------------
-st.header("💰 Regression Model")
-
-if wtp_col:
-    reg_df = df_model.dropna(subset=[wtp_col])
-
-    if len(reg_df) > 0:
-        y_reg = reg_df[wtp_col]
-        X_reg = reg_df.drop(columns=[wtp_col], errors='ignore')
-
-        X_train, X_test, y_train, y_test = train_test_split(X_reg, y_reg, test_size=0.2)
-
-        reg = RandomForestRegressor()
-        reg.fit(X_train, y_train)
-
-        pred = reg.predict(X_test)
-        st.write("Regression running successfully")
-
-    else:
-        st.warning("No data for regression")
+st.subheader("🤖 Classification Metrics")
+st.write("Accuracy:", round(accuracy_score(y_test, y_pred), 3))
+st.write("Precision:", round(precision_score(y_test, y_pred), 3))
+st.write("Recall:", round(recall_score(y_test, y_pred), 3))
+st.write("F1 Score:", round(f1_score(y_test, y_pred), 3))
 
 # ---------------- UPLOAD ----------------
-st.header("📥 Upload New Customers")
+st.subheader("📥 Upload New Customers")
 
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
 if uploaded:
     new_df = pd.read_csv(uploaded)
 
-    for col in new_df.columns:
-        if col in le_dict:
-            new_df[col] = new_df[col].astype(str)
-            new_df[col] = le_dict[col].transform(new_df[col])
+    # Align columns safely
+    for col in X.columns:
+        if col not in new_df.columns:
+            new_df[col] = np.nan
 
-    preds = clf.predict(new_df)
-    probs = clf.predict_proba(new_df)[:,1]
+    new_df = new_df[X.columns]
 
-    new_df["Predicted_Interest"] = preds
+    preds = model.predict(new_df)
+    probs = model.predict_proba(new_df)[:,1]
+
+    new_df["Prediction"] = preds
     new_df["Probability"] = probs
 
-    st.write(new_df.head())
+    st.success("✅ Predictions generated successfully")
+    st.dataframe(new_df.head())
 
-st.success("🔥 FULL APP RUNNING")
+st.success("🔥 App running without errors")
